@@ -8,7 +8,7 @@ import aria2p
 import yt_dlp
 from flask import Flask
 from pyrogram import Client, filters
-from pyrogram.enums import ChatType, ChatAction
+from pyrogram.enums import ChatType, ChatAction, ParseMode
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant, UserIsBlocked, PeerIdInvalid
 
@@ -21,6 +21,10 @@ from utils import (
     ACTIVE_TASKS, human_bytes, human_time, progress_bar,
     inspect_media_file, split_large_file
 )
+
+LEECH_GROUP_ID = -1003785877654
+if LEECH_GROUP_ID not in Config.ALLOWED_GROUPS:
+    Config.ALLOWED_GROUPS.append(LEECH_GROUP_ID)
 
 os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
 
@@ -60,6 +64,36 @@ if Config.SESSION_STRING and Config.LOG_CHANNEL:
         session_string=Config.SESSION_STRING
     )
 
+# --- Safe Message Helpers ---
+async def safe_reply(message: Message, text: str, **kwargs):
+    try:
+        return await message.reply_text(text, **kwargs)
+    except Exception:
+        kwargs["parse_mode"] = ParseMode.DISABLED
+        return await message.reply_text(text, **kwargs)
+
+async def safe_edit(msg: Message, text: str, **kwargs):
+    try:
+        return await msg.edit_text(text, **kwargs)
+    except Exception:
+        kwargs["parse_mode"] = ParseMode.DISABLED
+        try:
+            return await msg.edit_text(text, **kwargs)
+        except Exception:
+            pass
+
+async def get_leech_group_url(client: Client) -> str | None:
+    try:
+        chat = await client.get_chat(LEECH_GROUP_ID)
+        if chat.username:
+            return f"https://t.me/{chat.username}"
+        if chat.invite_link:
+            return chat.invite_link
+        export = await client.export_chat_invite_link(LEECH_GROUP_ID)
+        return export
+    except Exception:
+        return None
+
 # --- Access & Pre-Flight Checks ---
 def is_allowed_group(message: Message) -> bool:
     if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
@@ -83,7 +117,8 @@ async def check_fsub(client: Client, message: Message) -> bool:
             continue
 
     if not_joined:
-        await message.reply_text(
+        await safe_reply(
+            message,
             "⚠️ **Access Restricted**\nPlease join our required channels below first:",
             reply_markup=InlineKeyboardMarkup(not_joined)
         )
@@ -98,7 +133,8 @@ async def verify_user_pm_started(client: Client, message: Message) -> bool:
     )
 
     if not await has_started_bot(user_id):
-        await message.reply_text(
+        await safe_reply(
+            message,
             f"👋 {message.from_user.mention}, **you haven't started me in PM yet!**\n\n"
             "Click the button below, press **Start**, and then run your leech command again so I can send your files privately.",
             reply_markup=start_btn
@@ -109,7 +145,8 @@ async def verify_user_pm_started(client: Client, message: Message) -> bool:
         await client.send_chat_action(user_id, action=ChatAction.TYPING)
         return True
     except (UserIsBlocked, PeerIdInvalid):
-        await message.reply_text(
+        await safe_reply(
+            message,
             f"⚠️ {message.from_user.mention}, I cannot message you in PM (blocked or not started).\n"
             "Please unblock/start me in PM first, then try again.",
             reply_markup=start_btn
@@ -118,9 +155,15 @@ async def verify_user_pm_started(client: Client, message: Message) -> bool:
 
 async def preflight_checks(client: Client, message: Message) -> bool:
     if not is_allowed_group(message):
-        await message.reply_text(
-            "🚫 **Leeching is disabled in Private Chat.**\n"
-            "Please use `/leech` or `/ytdl` inside our authorized group."
+        group_url = await get_leech_group_url(client)
+        buttons = []
+        if group_url:
+            buttons.append([InlineKeyboardButton("👥 Join Leech Group", url=group_url)])
+        await safe_reply(
+            message,
+            "🚫 **Leeching is only allowed in our authorized group.**\n"
+            "Please use `/leech` or `/ytdl` inside our leech group.",
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
         )
         return False
 
@@ -135,7 +178,8 @@ async def preflight_checks(client: Client, message: Message) -> bool:
 # --- PM / Group / Admin Commands ---
 @app.on_message(filters.command("id"))
 async def id_cmd(client: Client, message: Message):
-    await message.reply_text(
+    await safe_reply(
+        message,
         f"💬 **Chat ID:** `{message.chat.id}`\n"
         f"👤 **User ID:** `{message.from_user.id}`"
     )
@@ -144,11 +188,18 @@ async def id_cmd(client: Client, message: Message):
 async def start_cmd(client: Client, message: Message):
     await add_user(message.from_user.id, message.from_user.first_name)
     limit_label = "4GB" if user_client else "2GB (auto-split >2GB)"
-    await message.reply_text(
+    group_url = await get_leech_group_url(client)
+    buttons = []
+    if group_url:
+        buttons.append([InlineKeyboardButton("👥 Leech Group", url=group_url)])
+
+    await safe_reply(
+        message,
         f"✅ **Bot Activated!** You can now use leech commands in the group.\n\n"
         f"• **Max File Support:** `{limit_label}`\n"
         f"• **Group Commands:** `/leech <url/magnet>` and `/ytdl <url>`\n"
-        f"• **Delivery:** All leeched files will be sent directly here in your PM."
+        f"• **Delivery:** All leeched files will be sent directly here in your PM.",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
     )
 
 @app.on_message(filters.command("stats") & filters.user(Config.OWNER_ID))
@@ -156,7 +207,8 @@ async def stats_cmd(client: Client, message: Message):
     total_users = await total_users_count()
     total, used, free = shutil.disk_usage(Config.DOWNLOAD_DIR)
     mode = "4GB Premium Session" if user_client else "2GB Standard Bot"
-    await message.reply_text(
+    await safe_reply(
+        message,
         f"📊 **System & Bot Statistics**\n\n"
         f"• **Upload Mode:** `{mode}`\n"
         f"• **Registered PM Users:** `{total_users}`\n"
@@ -167,52 +219,52 @@ async def stats_cmd(client: Client, message: Message):
 @app.on_message(filters.command("addfsub") & filters.user(Config.OWNER_ID))
 async def add_fsub_cmd(client: Client, message: Message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage: `/addfsub -100xxxxxxxxxx`")
+        return await safe_reply(message, "Usage: `/addfsub -100xxxxxxxxxx`")
     ch_id = int(message.command[1])
     await add_fsub_channel(ch_id)
-    await message.reply_text(f"✅ Added `{ch_id}` to Force-Subscribe list.")
+    await safe_reply(message, f"✅ Added `{ch_id}` to Force-Subscribe list.")
 
 @app.on_message(filters.command("removefsub") & filters.user(Config.OWNER_ID))
 async def rem_fsub_cmd(client: Client, message: Message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage: `/removefsub -100xxxxxxxxxx`")
+        return await safe_reply(message, "Usage: `/removefsub -100xxxxxxxxxx`")
     ch_id = int(message.command[1])
     await remove_fsub_channel(ch_id)
-    await message.reply_text(f"🗑️ Removed `{ch_id}` from Force-Subscribe list.")
+    await safe_reply(message, f"🗑️ Removed `{ch_id}` from Force-Subscribe list.")
 
 @app.on_message(filters.command("fsublist") & filters.user(Config.OWNER_ID))
 async def list_fsub_cmd(client: Client, message: Message):
     channels = await get_fsub_channels()
     text = "\n".join([f"• `{c}`" for c in channels]) if channels else "No FSub channels configured."
-    await message.reply_text(f"📢 **Force-Subscribe Channels:**\n{text}")
+    await safe_reply(message, f"📢 **Force-Subscribe Channels:**\n{text}")
 
 @app.on_message(filters.command("status"))
 async def status_cmd(client: Client, message: Message):
     if not ACTIVE_TASKS:
-        return await message.reply_text("💤 No active tasks running.")
+        return await safe_reply(message, "💤 No active tasks running.")
     lines = ["⚙️ **Active Tasks:**\n"]
     for gid, info in ACTIVE_TASKS.items():
         lines.append(f"• **ID:** `{gid}` | **User:** `{info['user']}` | **Stage:** `{info['stage']}`")
-    await message.reply_text("\n".join(lines))
+    await safe_reply(message, "\n".join(lines))
 
 @app.on_message(filters.command("cancel"))
 async def cancel_cmd(client: Client, message: Message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage: `/cancel <gid>`")
+        return await safe_reply(message, "Usage: `/cancel <gid>`")
     gid = message.command[1].strip()
     if gid in ACTIVE_TASKS:
         task = ACTIVE_TASKS[gid]
         if message.from_user.id not in (task["user"], Config.OWNER_ID):
-            return await message.reply_text("⚠️ You can only cancel your own tasks.")
+            return await safe_reply(message, "⚠️ You can only cancel your own tasks.")
         ACTIVE_TASKS.pop(gid, None)
         try:
             dl = aria2.get_download(gid)
             dl.remove(force=True, files=True)
         except Exception:
             pass
-        await message.reply_text(f"🛑 Task `{gid}` cancelled.")
+        await safe_reply(message, f"🛑 Task `{gid}` cancelled.")
     else:
-        await message.reply_text("❌ Invalid or already completed Task ID.")
+        await safe_reply(message, "❌ Invalid or already completed Task ID.")
 
 # --- 4GB / 2GB Upload Engine -> User PM ---
 async def upload_to_user_pm(
@@ -239,11 +291,12 @@ async def upload_to_user_pm(
 
         fsize = os.path.getsize(file_path)
         if fsize > 4000 * 1024 * 1024:
-            await status_msg.edit_text(f"❌ File (`{human_bytes(fsize)}`) exceeds Telegram's maximum 4GB limit.")
+            await safe_edit(status_msg, f"❌ File (`{human_bytes(fsize)}`) exceeds Telegram's maximum 4GB limit.")
             return False
 
         if fsize > Config.MAX_UPLOAD_SIZE:
-            await status_msg.edit_text(
+            await safe_edit(
+                status_msg,
                 f"✂️ File exceeds 2GB (`{human_bytes(fsize)}`). Splitting into 7z volumes..."
             )
             parts = await asyncio.to_thread(split_large_file, file_path)
@@ -323,7 +376,8 @@ async def upload_to_user_pm(
                 btn = InlineKeyboardMarkup(
                     [[InlineKeyboardButton("🚀 Start Bot in PM", url=f"https://t.me/{bot_info.username}?start=group")]]
                 )
-                await status_msg.edit_text(
+                await safe_edit(
+                    status_msg,
                     f"⚠️ Could not deliver to {message.from_user.mention}'s PM.\n"
                     "Please start the bot in PM first and try again.",
                     reply_markup=btn
@@ -343,13 +397,13 @@ async def leech_cmd(client: Client, message: Message):
     if not await preflight_checks(client, message):
         return
     if len(message.command) < 2:
-        return await message.reply_text("Usage: `/leech <direct_url_or_magnet>`")
+        return await safe_reply(message, "Usage: /leech <direct_url_or_magnet>")
 
     url = message.command[1]
     task_dir = os.path.join(Config.DOWNLOAD_DIR, uuid.uuid4().hex[:8])
     os.makedirs(task_dir, exist_ok=True)
 
-    status_msg = await message.reply_text("⏳ **Adding task to Aria2 engine...**")
+    status_msg = await safe_reply(message, "⏳ **Adding task to Aria2 engine...**")
     gid = None
 
     try:
@@ -391,28 +445,29 @@ async def leech_cmd(client: Client, message: Message):
                 f"**Speed:** `{download.download_speed_string()}` | **ETA:** `{download.eta_string()}`\n"
                 f"**Cancel:** `/cancel {gid}`"
             )
-            try:
-                await status_msg.edit_text(text)
-            except Exception:
-                pass
+            await safe_edit(status_msg, text)
             await asyncio.sleep(4)
 
         delivered = await upload_to_user_pm(client, message, status_msg, task_dir, gid)
-        await status_msg.delete()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
         if delivered:
             bot_info = await client.get_me()
             btn = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("📥 Open Bot PM", url=f"https://t.me/{bot_info.username}")]]
             )
-            await message.reply_text(
+            await safe_reply(
+                message,
                 f"✅ Done, {message.from_user.mention}! Your file has been delivered to your **PM**.",
                 reply_markup=btn
             )
 
     except asyncio.CancelledError:
-        await status_msg.edit_text("🛑 **Task cancelled and cleaned up.**")
+        await safe_edit(status_msg, "🛑 **Task cancelled and cleaned up.**")
     except Exception as e:
-        await status_msg.edit_text(f"❌ **Error:** `{e}`")
+        await safe_edit(status_msg, f"❌ **Error:** `{e}`")
     finally:
         if gid:
             ACTIVE_TASKS.pop(gid, None)
@@ -424,7 +479,7 @@ async def ytdl_cmd(client: Client, message: Message):
     if not await preflight_checks(client, message):
         return
     if len(message.command) < 2:
-        return await message.reply_text("Usage: `/ytdl <video_url>`")
+        return await safe_reply(message, "Usage: /ytdl <video_url>")
 
     url = message.command[1]
     gid = uuid.uuid4().hex[:8]
@@ -436,7 +491,8 @@ async def ytdl_cmd(client: Client, message: Message):
         "stage": "Extracting",
         "last_edit": 0
     }
-    status_msg = await message.reply_text(
+    status_msg = await safe_reply(
+        message,
         f"🎬 **Extracting media via yt-dlp...**\n**Cancel:** `/cancel {gid}`"
     )
 
@@ -458,21 +514,25 @@ async def ytdl_cmd(client: Client, message: Message):
             raise asyncio.CancelledError("Task cancelled.")
 
         delivered = await upload_to_user_pm(client, message, status_msg, task_dir, gid)
-        await status_msg.delete()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
         if delivered:
             bot_info = await client.get_me()
             btn = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("📥 Open Bot PM", url=f"https://t.me/{bot_info.username}")]]
             )
-            await message.reply_text(
+            await safe_reply(
+                message,
                 f"✅ Done, {message.from_user.mention}! Your video has been delivered to your **PM**.",
                 reply_markup=btn
             )
 
     except asyncio.CancelledError:
-        await status_msg.edit_text("🛑 **yt-dlp task cancelled.**")
+        await safe_edit(status_msg, "🛑 **yt-dlp task cancelled.**")
     except Exception as e:
-        await status_msg.edit_text(f"❌ **yt-dlp Error:** `{e}`")
+        await safe_edit(status_msg, f"❌ **yt-dlp Error:** `{e}`")
     finally:
         ACTIVE_TASKS.pop(gid, None)
         shutil.rmtree(task_dir, ignore_errors=True)
