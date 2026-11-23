@@ -20,7 +20,6 @@ class Config:
     ALLOWED_GROUPS = [int(x) for x in _raw_allowed_groups if x.lstrip("-").isdigit()]
     ALLOWED_GROUP_LINKS = [x for x in _raw_allowed_groups if not x.lstrip("-").isdigit()]
 
-
     # MongoDB
     MONGO_URI = os.getenv("MONGO_URI", "")
     DB_NAME = os.getenv("DB_NAME", "AeroLeechBot")
