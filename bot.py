@@ -26,6 +26,9 @@ LEECH_GROUP_ID = -1003785877654
 if LEECH_GROUP_ID not in Config.ALLOWED_GROUPS:
     Config.ALLOWED_GROUPS.append(LEECH_GROUP_ID)
 
+COOKIES_FILE = os.path.abspath("./cookies.txt")
+YT_COOKIES_ENV = os.getenv("YT_COOKIES", "").strip()
+
 os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
 
 # --- 24/7 Health Check Server (Render / Koyeb / Heroku) ---
@@ -410,7 +413,15 @@ async def leech_cmd(client: Client, message: Message):
         if url.startswith("magnet:"):
             download = aria2.add_magnet(url, options={"dir": task_dir})
         else:
-            download = aria2.add_uris([url], options={"dir": task_dir})
+            download = aria2.add_uris(
+                [url],
+                options={
+                    "dir": task_dir,
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "max-connection-per-server": "2",
+                    "split": "2",
+                },
+            )
 
         gid = download.gid
         ACTIVE_TASKS[gid] = {
@@ -504,6 +515,9 @@ async def ytdl_cmd(client: Client, message: Message):
             "noplaylist": True,
             "quiet": True,
         }
+        if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+            ydl_opts["cookiefile"] = COOKIES_FILE
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             return ydl.prepare_filename(info)
@@ -560,6 +574,11 @@ async def resolve_allowed_groups():
                 print(f"❌ Could not resolve '{entry}': {e}. Send /id in the group and put the -100 ID in ALLOWED_GROUPS.")
 
 async def start_services():
+    if YT_COOKIES_ENV:
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(YT_COOKIES_ENV + "\n")
+        print("🍪 Loaded YT_COOKIES into cookies.txt")
+
     threading.Thread(target=run_flask, daemon=True).start()
     await app.start()
     if user_client:
