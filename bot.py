@@ -8,7 +8,7 @@ import aria2p
 import yt_dlp
 from flask import Flask
 from pyrogram import Client, filters
-from pyrogram.enums import ChatType
+from pyrogram.enums import ChatType, ChatAction
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant, UserIsBlocked, PeerIdInvalid
 
@@ -106,7 +106,7 @@ async def verify_user_pm_started(client: Client, message: Message) -> bool:
         return False
 
     try:
-        await client.send_chat_action(user_id, action="typing")
+        await client.send_chat_action(user_id, action=ChatAction.TYPING)
         return True
     except (UserIsBlocked, PeerIdInvalid):
         await message.reply_text(
