@@ -132,7 +132,14 @@ async def preflight_checks(client: Client, message: Message) -> bool:
 
     return True
 
-# --- PM / Admin Commands ---
+# --- PM / Group / Admin Commands ---
+@app.on_message(filters.command("id"))
+async def id_cmd(client: Client, message: Message):
+    await message.reply_text(
+        f"💬 **Chat ID:** `{message.chat.id}`\n"
+        f"👤 **User ID:** `{message.from_user.id}`"
+    )
+
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
     await add_user(message.from_user.id, message.from_user.first_name)
@@ -472,21 +479,33 @@ async def ytdl_cmd(client: Client, message: Message):
 
 async def resolve_allowed_groups():
     for entry in Config.ALLOWED_GROUP_LINKS:
-        try:
-            chat = await app.get_chat(entry)
-            if chat.id not in Config.ALLOWED_GROUPS:
-                Config.ALLOWED_GROUPS.append(chat.id)
-                print(f"✅ Resolved allowed group '{entry}' -> {chat.id}")
-        except Exception as e:
-            print(f"⚠️ Could not resolve group '{entry}': {e}")
+        resolved = False
+        if user_client:
+            try:
+                chat = await user_client.join_chat(entry)
+                if chat.id not in Config.ALLOWED_GROUPS:
+                    Config.ALLOWED_GROUPS.append(chat.id)
+                print(f"✅ Joined & resolved '{entry}' -> {chat.id}")
+                resolved = True
+            except Exception as e:
+                print(f"⚠️ User client could not join '{entry}': {e}")
+
+        if not resolved:
+            try:
+                chat = await app.get_chat(entry)
+                if chat.id not in Config.ALLOWED_GROUPS:
+                    Config.ALLOWED_GROUPS.append(chat.id)
+                print(f"✅ Resolved '{entry}' via bot -> {chat.id}")
+            except Exception as e:
+                print(f"❌ Could not resolve '{entry}': {e}. Send /id in the group and put the -100 ID in ALLOWED_GROUPS.")
 
 async def start_services():
     threading.Thread(target=run_flask, daemon=True).start()
     await app.start()
-    await resolve_allowed_groups()
     if user_client:
         await user_client.start()
         print("✅ 4GB User Session Client connected!")
+    await resolve_allowed_groups()
     print("🚀 LeechBot is running 24/7...")
     await asyncio.Event().wait()
 
