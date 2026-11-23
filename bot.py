@@ -470,9 +470,20 @@ async def ytdl_cmd(client: Client, message: Message):
         ACTIVE_TASKS.pop(gid, None)
         shutil.rmtree(task_dir, ignore_errors=True)
 
+async def resolve_allowed_groups():
+    for entry in Config.ALLOWED_GROUP_LINKS:
+        try:
+            chat = await app.get_chat(entry)
+            if chat.id not in Config.ALLOWED_GROUPS:
+                Config.ALLOWED_GROUPS.append(chat.id)
+                print(f"✅ Resolved allowed group '{entry}' -> {chat.id}")
+        except Exception as e:
+            print(f"⚠️ Could not resolve group '{entry}': {e}")
+
 async def start_services():
     threading.Thread(target=run_flask, daemon=True).start()
     await app.start()
+    await resolve_allowed_groups()
     if user_client:
         await user_client.start()
         print("✅ 4GB User Session Client connected!")
