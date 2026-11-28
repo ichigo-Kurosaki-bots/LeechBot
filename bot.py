@@ -515,6 +515,7 @@ async def ytdl_cmd(client: Client, message: Message):
             "quiet": True,
             "sleep_interval": 1,
             "max_sleep_interval": 3,
+            "js_runtimes": {"node": {}},
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "tv_embedded", "web"]
